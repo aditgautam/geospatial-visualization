@@ -15,6 +15,49 @@ const map = new mapboxgl.Map({
     maxZoom: 18, // Maximum allowed zoom
 });
 
+const svg = d3.select('#map').select('svg');
+function getCoords(station) {
+    const point = new mapboxgl.LngLat(+station.lon, +station.lat); // Convert lon/lat to Mapbox LngLat
+    const { x, y } = map.project(point); // Project to pixel coordinates
+    return { cx: x, cy: y }; // Return as object for use in SVG attributes
+}
+
+function formatTime(minutes) {
+    const date = new Date(0, 0, 0, 0, minutes);
+    return date.toLocaleString('en-US', { timeStyle: 'short' });
+}
+
+function minutesSinceMidnight(date) {
+    return date.getHours() * 60 + date.getMinutes();
+}
+
+function computeStationTraffic(stations, trips) {
+    const departures = d3.rollup(
+        trips,
+        v => v.length,
+        d => d.start_station_id
+    );
+
+    const arrivals = d3.rollup(
+        trips,
+        v => v.length,
+        d => d.end_station_id
+    );
+
+    return stations.map(station => {
+        const id = station.short_name;
+        station.arrivals = arrivals.get(id) ?? 0;
+        station.departures = departures.get(id) ?? 0;
+        station.totalTraffic = station.arrivals + station.departures;
+        return station;
+    });
+}
+
+const stationFlow = d3
+    .scaleQuantize()
+    .domain([0, 1])
+    .range([0, 0.5, 1]);
+
 map.on('load', async () => {
     //code
     map.addSource('boston_route', {
@@ -46,4 +89,134 @@ map.on('load', async () => {
             'line-opacity': 0.4,
         },
     });
+    let jsonData;
+    let stations;
+    try {
+        const jsonurl = 'https://dsc106.com/labs/lab07/data/bluebikes-stations.json';
+        jsonData = await d3.json(jsonurl);
+        stations = jsonData.data.stations;
+
+    console.log('Loaded JSON Data:', jsonData); // Log to verify structure
+    } catch (error) {
+    console.error('Error loading JSON:', error); // Handle errors
+    }
+    // Append circles to the SVG for each station
+    const trips = await d3.csv(
+        'https://dsc106.com/labs/lab07/data/bluebikes-traffic-2024-03.csv',
+        d => ({
+            ...d,
+            started_at: new Date(d.started_at),
+            ended_at: new Date(d.ended_at)
+        })
+    );
+    
+    const departures = d3.rollup(
+        trips,
+        v => v.length,
+        d => d.start_station_id
+    );
+    
+    const arrivals = d3.rollup(
+        trips,
+        v => v.length,
+        d => d.end_station_id
+    );
+    
+    stations = stations.map(s => {
+        const id = s.short_name;
+        s.arrivals = arrivals.get(id) ?? 0;
+        s.departures = departures.get(id) ?? 0;
+        s.totalTraffic = s.arrivals + s.departures;
+        return s;
+    });
+    
+    const radiusScale = d3
+        .scaleSqrt()
+        .domain([0, d3.max(stations, d => d.totalTraffic)])
+        .range([0, 25]);
+    
+        const circles = svg
+        .selectAll('circle')
+        .data(stations, d => d.short_name)
+        .join('circle')
+        .attr('cx', d => getCoords(d).cx)
+        .attr('cy', d => getCoords(d).cy)
+        .attr('r', d => radiusScale(d.totalTraffic))
+        .attr('pointer-events', 'auto')
+        .style('--departure-ratio', d =>
+            stationFlow(d.departures / d.totalTraffic)
+        )
+        .each(function (d) {
+            d3.select(this)
+                .append('title')
+                .text(`${d.totalTraffic} trips (${d.departures} departures, ${d.arrivals} arrivals)`);
+        });
+    
+    // Function to update circle positions when the map moves/zooms
+    function updatePositions() {
+        circles
+        .attr('cx', (d) => getCoords(d).cx) // Set the x-position using projected coordinates
+        .attr('cy', (d) => getCoords(d).cy); // Set the y-position using projected coordinates
+    }
+    // Initial position update when map loads
+    updatePositions();
+    
+    // Reposition markers on map interactions
+    map.on('move', updatePositions); // Update during map movement
+    map.on('zoom', updatePositions); // Update during zooming
+    map.on('resize', updatePositions); // Update on window resize
+    map.on('moveend', updatePositions); // Final adjustment after movement ends
+
+    const timeSlider = document.getElementById('time-slider');
+    const selectedTime = document.getElementById('selected-time');
+    const anyTimeLabel = document.getElementById('any-time');
+
+    let timeFilter = -1;
+    function updateTimeDisplay() {
+        timeFilter = Number(timeSlider.value);
+    
+        if (timeFilter === -1) {
+            selectedTime.textContent = '';
+            anyTimeLabel.style.display = 'block';
+        } else {
+            selectedTime.textContent = formatTime(timeFilter);
+            anyTimeLabel.style.display = 'none';
+        }
+    
+        updateScatterPlot(timeFilter);
+    }
+    function filterTripsByTime(trips, timeFilter) {
+        return timeFilter === -1
+            ? trips
+            : trips.filter(trip => {
+                const started = minutesSinceMidnight(trip.started_at);
+                const ended = minutesSinceMidnight(trip.ended_at);
+                return (
+                    Math.abs(started - timeFilter) <= 60 ||
+                    Math.abs(ended - timeFilter) <= 60
+                );
+            });
+    }
+    function updateScatterPlot(timeFilter) {
+        const filteredTrips = filterTripsByTime(trips, timeFilter);
+        const filteredStations = computeStationTraffic(stations, filteredTrips);
+    
+        if (timeFilter === -1) {
+            radiusScale.range([0, 25]);
+        } else {
+            radiusScale.range([3, 50]);
+        }
+    
+        circles
+            .data(filteredStations, d => d.short_name)
+            .join('circle')
+            .attr('cx', d => getCoords(d).cx)
+            .attr('cy', d => getCoords(d).cy)
+            .attr('r', d => radiusScale(d.totalTraffic))
+            .style('--departure-ratio', d =>
+                stationFlow(d.departures / d.totalTraffic)
+        );
+    }
+    timeSlider.addEventListener('input', updateTimeDisplay);
+    updateTimeDisplay();
 });

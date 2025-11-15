@@ -7,4 +7,27 @@ body {
     box-sizing: border-box;
     margin: auto;
     padding: 1em;
-  }  
+    }
+
+header {
+    display: flex;
+    gap: 1em;
+    align-items: baseline;
+}
+
+.time-filter {
+    margin-left: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    font-size: 0.9rem;
+}
+
+#selected-time, #any-time {
+    display: block;
+}
+
+#any-time {
+    font-style: italic;
+    color: #777;
+}
